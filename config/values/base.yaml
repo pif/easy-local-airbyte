@@ -1,0 +1,70 @@
+# Base Helm values for a self-contained local Airbyte (chart airbyte/airbyte 2.x).
+#
+# Design goals:
+#   * Everything internal -- no external Postgres, no cloud object storage.
+#   * Nothing here is kind-specific, so the same file can be reused when this
+#     moves to a real cluster. Only the ingress host and the cluster/VM bits
+#     live outside this file.
+#
+# Release-name-dependent values (global.airbyteUrl, WEBAPP_URL) are injected by
+# scripts/install.sh via --set, because Helm values files cannot interpolate.
+
+global:
+  edition: community
+
+  # Bundled Postgres, templated by the chart itself as StatefulSet "airbyte-db".
+  # "internal" is the chart default; pinned explicitly so an upstream default
+  # flip can never silently point this at an external database.
+  database:
+    type: internal
+
+  # Bundled MinIO for logs / state / workload output. This keeps the install
+  # self-contained; swap to s3/gcs when migrating to a cloud cluster.
+  storage:
+    type: minio
+
+  # Secrets (connector credentials) live in the config database because no
+  # external secrets manager is configured. This is what makes a pg_dumpall
+  # backup a complete backup of your connections.
+  secretsManager:
+    enabled: false
+
+  auth:
+    enabled: true
+
+  jobs:
+    # Ceiling for connector job pods. Matches abctl's default (it sets these
+    # regardless of --low-resource-mode).
+    resources:
+      limits:
+        cpu: "3"
+        memory: 4Gi
+
+# Bundled Postgres. Chart default PVC is 500Mi, which fills up quickly once
+# job history accumulates.
+postgresql:
+  enabled: true
+  storage:
+    volumeClaimValue: 10Gi
+
+minio:
+  enabled: true
+  storage:
+    volumeClaimValue: 10Gi
+
+# Route http://localhost:<HOST_PORT>/ to airbyte-server. The chart's ingress
+# template only supports backend "server" -- in chart 2.x the server also
+# serves the web UI (webapp.enabled is false by default).
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: localhost
+      paths:
+        - path: /
+          pathType: Prefix
+          backend: server
+
+airbyteBootloader:
+  env_vars:
+    PLATFORM_LOG_FORMAT: json

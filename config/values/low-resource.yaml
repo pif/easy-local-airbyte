@@ -1,0 +1,124 @@
+# Low-resource mode: a Helm-native port of abctl's `--low-resource-mode`.
+#
+# Source of truth for the intent: abctl internal/helm/airbyte_values.go,
+# buildAirbyteValuesV2(), the `if opts.LowResourceMode` block.
+#
+# ---------------------------------------------------------------------------
+# What the mode does, and why connections run smoother because of it
+# ---------------------------------------------------------------------------
+#
+#  1. JOB_RESOURCE_VARIANT_OVERRIDE=lowresource  <-- the important one.
+#     Connectors ship declared resource requirements and the platform normally
+#     honours them. This tells the server to resolve the "lowresource" variant
+#     of those requirements instead. On a single-node local cluster the
+#     declared defaults routinely exceed what the node can offer, so
+#     sync/check/discover pods sit Pending forever and connections look like
+#     they hang. This override is what stops that.
+#
+#  2. Job resource *requests* -> 0, limits untouched.
+#     Requests are what the scheduler reserves up front. Zeroing them lets job
+#     pods schedule onto an already-committed node instead of being rejected.
+#     Limits stay at 3 CPU / 4Gi (set in base.yaml) so a runaway connector
+#     still cannot eat the whole machine.
+#
+#  3. The same for the short-lived check / discover / spec / sidecar pods --
+#     the ones launched when you hit "Test connection" or refresh a schema, and
+#     the most common thing to get stuck Pending on a laptop.
+#
+#  4. The connector-builder service is switched off.
+#
+# Trade-off: with requests at 0 the scheduler cannot know what jobs will
+# consume, so it will happily overcommit the node. Correct for a local
+# single-node install; wrong for production.
+#
+# ---------------------------------------------------------------------------
+# Two deliberate corrections to abctl's values for chart 2.x
+# ---------------------------------------------------------------------------
+#
+#  (a) abctl sets workloadLauncher.env_vars.{CHECK,DISCOVER,SIDECAR}_* directly.
+#      Chart 2.x has first-class values for those, which it renders into the
+#      shared `<release>-airbyte-env` ConfigMap and injects into the server,
+#      worker and workload-launcher deployments. Using the chart values instead
+#      of raw env_vars avoids injecting the same env var name twice into the
+#      same container, and reaches the server/worker too -- not just the
+#      launcher. SPEC_JOB_* has no chart equivalent, so it stays as env_vars.
+#
+#  (b) abctl sets `connectorBuilderServer.enabled=false`. That key does not
+#      exist in chart 2.x -- the section is gone, so the value is silently
+#      ignored and the pod keeps running. `manifestServer` is its replacement.
+#
+#  abctl also only sets the deprecated `global.jobs.resources` keys. Chart 2.2.0
+#  notes the legacy fallback covers main-container resources only and that
+#  replication is explicitly not consumed (airbyte#72833) -- so on chart 2.x
+#  abctl's low-resource mode never reaches replication pods. Setting the modern
+#  keys below closes that gap.
+#
+# NOTE ON QUOTING: every value here is a quoted string on purpose. The chart
+# resolves these with sprig's `default`, which treats a bare numeric 0 as empty
+# and would silently fall through to the chart default. "0" is truthy; 0 is not.
+
+server:
+  env_vars:
+    JOB_RESOURCE_VARIANT_OVERRIDE: lowresource
+
+global:
+  # Deprecated in chart 2.x but still the documented fallback. Kept for exact
+  # abctl parity and so this file degrades gracefully on older 2.0.x charts.
+  jobs:
+    resources:
+      requests:
+        cpu: "0"
+        memory: "0"
+
+  workloads:
+    resources:
+      # Connector job pods (JOB_MAIN_CONTAINER_*).
+      mainContainer:
+        cpu:
+          request: "0"
+        memory:
+          request: "0"
+
+      # "Test connection" pods (CHECK_JOB_MAIN_CONTAINER_*).
+      check:
+        cpu:
+          request: "0"
+        memory:
+          request: "0"
+
+      # Schema refresh pods (DISCOVER_JOB_MAIN_CONTAINER_*).
+      discover:
+        cpu:
+          request: "0"
+        memory:
+          request: "0"
+
+      # Sync orchestrator (REPLICATION_ORCHESTRATOR_*). abctl misses this one
+      # on chart 2.x; it is the pod that actually runs your syncs.
+      replication:
+        cpu:
+          request: "0"
+        memory:
+          request: "0"
+
+      # Connector sidecar (SIDECAR_MAIN_CONTAINER_*).
+      sidecar:
+        cpu:
+          request: "0"
+        memory:
+          request: "0"
+
+workloadLauncher:
+  env_vars:
+    # No chart-native equivalent exists in 2.2.0 (the chart never references
+    # SPEC_JOB_*), so these are injected the way abctl does it.
+    SPEC_JOB_MAIN_CONTAINER_CPU_REQUEST: "0"
+    SPEC_JOB_MAIN_CONTAINER_MEMORY_REQUEST: "0"
+
+# Connector Builder / manifest server. Disabling it saves a pod, matching
+# abctl's intent. Cost: the Connector Builder UI stops working -- connections,
+# syncs and all built-in connectors are unaffected.
+# Set DISABLE_CONNECTOR_BUILDER=false in .env to keep it enabled; install.sh
+# then re-enables it with an explicit --set.
+manifestServer:
+  enabled: false

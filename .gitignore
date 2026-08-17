@@ -1,0 +1,13 @@
+# Contains the generated admin password.
+.env
+
+# Database dumps: large, and they contain connector credentials because Airbyte
+# stores secrets in the config database when no external secrets manager is set.
+backups/*
+!backups/.gitkeep
+
+# Local-only Helm overrides, picked up automatically by scripts/install.sh.
+config/values/local.yaml
+
+# Transient state written by an aborted restore.
+.restore-scale-state

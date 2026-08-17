@@ -1,0 +1,29 @@
+# kind cluster for local Airbyte. Rendered by scripts/up.sh, which substitutes
+# ${CLUSTER_NAME}, ${KIND_NODE_IMAGE} and ${HOST_PORT} via envsubst.
+#
+# Single control-plane node, labelled ingress-ready so ingress-nginx's
+# nodeSelector schedules onto it, with container port 80 published to
+# localhost:${HOST_PORT} -- the same shape abctl builds.
+#
+# Note: unlike abctl we deliberately do NOT bind-mount the PersistentVolume
+# directory to a host path. On macOS that path is a virtiofs mount into the
+# Docker VM, and running Postgres' data directory over it invites permission
+# and fsync problems (the DB container runs as uid 70). PV data therefore lives
+# inside the node's own filesystem, and durability across a cluster rebuild is
+# handled properly by scripts/backup.sh / scripts/restore.sh.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ${CLUSTER_NAME}
+nodes:
+  - role: control-plane
+    image: ${KIND_NODE_IMAGE}
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: ${HOST_PORT}
+        protocol: TCP
