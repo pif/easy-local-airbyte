@@ -1,4 +1,4 @@
-# sp-airbyte
+# easy-local-airbyte
 
 Automated local [Airbyte](https://airbyte.com) (open source) on Kubernetes, with
 scripted backup and restore of its internal Postgres.
@@ -15,7 +15,7 @@ Uses the chart's **bundled internal Postgres and MinIO**. No external database.
 ## Quick start
 
 ```bash
-git clone <this repo> && cd sp-airbyte
+git clone <this repo> && cd easy-local-airbyte
 cp .env.example .env        # optional; defaults work as-is
 make bootstrap              # tools -> VM -> cluster -> Airbyte
 make credentials            # print the login
@@ -120,6 +120,100 @@ stylistic differences:
   through sprig's `default`, which treats a bare `0` as *empty* and silently
   falls through to the chart default. `"0"` is truthy; `0` is not. Every value
   in the file is quoted for this reason.
+
+---
+
+## Logging in
+
+```bash
+make credentials
+```
+
+Community edition runs in **`simple` auth mode**. The login pair is:
+
+| | |
+|---|---|
+| **Email** | whatever you typed on the first-run setup screen |
+| **Password** | the generated `instance-admin-password` |
+
+There is **no default username or password pair** to look up — per Airbyte's
+[authentication docs](https://docs.airbyte.com/platform/deploying-airbyte/integrations/authentication),
+auth is *"based on the email provided at setup and a generated password."* The
+setup screen isn't asking you to authenticate; it's asking you to *define* the
+admin email. Any address works.
+
+`make credentials` reads the email back out of the database (`user.email`) and
+the password out of the `airbyte-auth-secrets` Kubernetes secret, so it always
+shows the pair that actually works — including after a restore, where the
+password comes from the backup rather than from `.env`.
+
+The password originates from `AIRBYTE_ADMIN_PASSWORD` in `.env`, generated on
+first install and pinned there so it survives `helm upgrade` instead of being
+regenerated each time. Set it yourself before the first install to choose one.
+
+The `client-id` / `client-secret` shown are for the API, not the UI:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/applications/token \
+  -H 'Content-Type: application/json' \
+  -d '{"client_id":"<id>","client_secret":"<secret>"}' | jq -r .access_token)
+curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/public/v1/workspaces
+```
+
+---
+
+## Telemetry
+
+**Disabled in `config/values/base.yaml`.** Verify at any time with `make status`,
+which prints the live values and confirms the pods are actually running them.
+
+A stock install of this chart **does phone home**: it ships a hardcoded Airbyte
+Segment write key as the *default* for `tracking.segment.writeKeySecretKey`, with
+`tracking.enabled: true` and `strategy: segment`. This repo sets:
+
+| Setting | Value | Effect |
+|---|---|---|
+| `TRACKING_STRATEGY` | `logging` | The real off switch — events go to the pod log, not the network |
+| `TRACKING_ENABLED` | `false` | Tracking off |
+| `SEGMENT_WRITE_KEY` | `disabled` | Airbyte's built-in key replaced, so there is no valid destination |
+| `PUBLISH_METRICS` | `false` | Undocumented in the chart, defaults to `true` |
+| `MICROMETER_METRICS_ENABLED` | `false` | No metrics export |
+| `DD_ENABLED` | `false` | No Datadog APM |
+| `JOB_ERROR_REPORTING_STRATEGY` | `logging` | Connector stack traces stay local, not sent to Sentry |
+
+`SEGMENT_WRITE_KEY` cannot be set to `""` — the chart resolves it through
+sprig's `default`, which treats an empty string as unset and would restore the
+real key. Hence the dummy value.
+
+### The "Anonymize usage data collection" checkbox is not an off switch
+
+You're right that it's misleading. That checkbox writes
+`workspace.anonymous_data_collection`, which only controls **whether events are
+tagged with your workspace ID or a random UUID** — it does not stop events being
+sent. Airbyte's own [telemetry docs](https://docs.airbyte.com/platform/operator-guides/telemetry)
+don't even mention the checkbox; they document `tracking.strategy: logging` as
+the way to disable telemetry, which is what this repo does.
+
+So: **with `TRACKING_STRATEGY=logging`, nothing is transmitted either way and the
+checkbox is moot.** Tick it anyway — if a future chart upgrade or a hand-edited
+values file ever re-enabled tracking, anonymised beats identified.
+
+### What still contacts Airbyte, honestly
+
+Disabling telemetry does not make the install fully air-gapped:
+
+- **Connector registry** (`global.connectorRegistry.seedProvider: remote`) —
+  fetches the connector catalogue and connector Docker images from Airbyte's
+  CDN/registry. This is a functional download, not telemetry, but it does reveal
+  your IP. Setting it to `local` uses the chart's bundled seed instead, at the
+  cost of a stale connector list; left on `remote` here because the alternative
+  degrades the product.
+- **Image pulls** from Docker Hub / Airbyte's registry.
+
+Telemetry state was verified by reading the environment of the running
+`airbyte-server`, `airbyte-worker` and `airbyte-workload-launcher` processes —
+i.e. the configuration Airbyte's documented off switch acts on. It was not
+verified by packet capture.
 
 ---
 
@@ -280,7 +374,7 @@ this out. Confirm `LOW_RESOURCE_MODE=true`, then raise `VM_CPUS` /
 (`colima delete -p airbyte && make bootstrap`).
 
 **`localhost:8000` not responding** — check the controller with
-`kubectl --context kind-sp-airbyte -n ingress-nginx get pods`. If port 8000 is
+`kubectl --context kind-easy-local-airbyte -n ingress-nginx get pods`. If port 8000 is
 taken, set `HOST_PORT` in `.env`; it's baked into the kind port mapping, so the
 cluster must be recreated (`make down && make bootstrap`).
 

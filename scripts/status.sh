@@ -75,6 +75,38 @@ mfs="$(deploy_name manifest-server)"
 printf '  %-42s %s\n' "manifest-server (connector builder)" \
   "$( [[ -n "$mfs" ]] && echo enabled || echo disabled )"
 
+# --- Telemetry --------------------------------------------------------------
+printf '\n%sTelemetry%s\n' "$C_BLUE" "$C_RESET"
+for k in TRACKING_ENABLED TRACKING_STRATEGY SEGMENT_WRITE_KEY \
+         PUBLISH_METRICS MICROMETER_METRICS_ENABLED JOB_ERROR_REPORTING_STRATEGY; do
+  v="$(kcn get configmap "$cm" -o jsonpath="{.data.${k}}" 2>/dev/null || true)"
+  printf '  %-42s %s\n' "$k" "${v:-<unset>}"
+done
+
+# The ConfigMap is only the desired state -- pod env is resolved at start. If the
+# stamped fingerprint matches, the pods really are running these values.
+fp_now="$(config_fingerprint)"
+stale=0
+while read -r d; do
+  [[ -n "$d" ]] || continue
+  fp_pod="$(kcn get "$d" -o jsonpath="{.spec.template.metadata.annotations['${CONFIG_FP_ANNOTATION}']}" 2>/dev/null || true)"
+  [[ "$fp_pod" == "$fp_now" ]] || stale=$(( stale + 1 ))
+done < <(kcn get deployments -o name 2>/dev/null)
+
+if (( stale > 0 )); then
+  warn "$stale deployment(s) are running config older than the ConfigMap."
+  dim "  Pod env is fixed at start-up, so run 'make install' to roll them."
+else
+  ok "Pods confirmed running the above configuration"
+fi
+
+# Workspace-level preference. NOTE: this only controls whether events carry the
+# workspace ID or a random UUID -- it is not an on/off switch. With
+# TRACKING_STRATEGY=logging nothing is transmitted either way.
+adc="$(pg_psql "$PG_DATABASE" -tAc \
+  "SELECT coalesce(anonymous_data_collection::text, 'not-set') FROM workspace LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
+printf '  %-42s %s\n' "workspace.anonymous_data_collection" "${adc:-<unavailable>}"
+
 printf '\n%sEndpoint%s\n' "$C_BLUE" "$C_RESET"
 code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:${HOST_PORT}/" 2>/dev/null || echo 000)"
 if [[ "$code" =~ ^(200|302|401)$ ]]; then

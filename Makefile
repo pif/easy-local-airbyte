@@ -16,7 +16,7 @@ endif
         down down-all uninstall logs shell-db template lint clean
 
 help: ## Show this help
-	@printf '\nsp-airbyte -- local open-source Airbyte on Kubernetes\n\n'
+	@printf '\neasy-local-airbyte -- local open-source Airbyte on Kubernetes\n\n'
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 	@printf '\nCommon flow:  make bootstrap   ->   make status   ->   make credentials\n\n'
@@ -69,11 +69,11 @@ scale-up: ## Start Airbyte back up
 # prefix when the release is called "airbyte", so the deployment name is not a
 # predictable string across RELEASE values. COMPONENT=worker etc. also works.
 logs: ## Tail component logs (COMPONENT=server|worker|workload-launcher|cron)
-	@kubectl --context kind-$${CLUSTER_NAME:-sp-airbyte} -n $${NAMESPACE:-airbyte} \
+	@kubectl --context kind-$${CLUSTER_NAME:-easy-local-airbyte} -n $${NAMESPACE:-airbyte} \
 	  logs -f -l airbyte=$${COMPONENT:-server} --tail=200 --max-log-requests=10
 
 shell-db: ## Open a psql shell on the internal Postgres
-	@kubectl --context kind-$${CLUSTER_NAME:-sp-airbyte} -n $${NAMESPACE:-airbyte} \
+	@kubectl --context kind-$${CLUSTER_NAME:-easy-local-airbyte} -n $${NAMESPACE:-airbyte} \
 	  exec -it airbyte-db-0 -c airbyte-db-container -- \
 	  env PGPASSWORD=airbyte psql -U airbyte -d db-airbyte
 

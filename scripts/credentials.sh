@@ -18,8 +18,19 @@ get_key() {
 
 printf '%sAirbyte%s  http://localhost:%s\n\n' "$C_BLUE" "$C_RESET" "$HOST_PORT"
 
+# Community edition uses "simple" auth mode: the login pair is the email that was
+# entered on the setup screen plus the generated instance-admin password. There
+# is no default or built-in username -- the email only exists once setup has been
+# completed, so read it back from the database rather than guessing.
 pw="$(get_key instance-admin-password)"
-printf '  %-16s %s\n' "email:" "${AIRBYTE_ADMIN_EMAIL:-<set on first login in the UI>}"
+email="${AIRBYTE_ADMIN_EMAIL:-}"
+if [[ -z "$email" ]]; then
+  email="$(pg_psql "$PG_DATABASE" -tAc \
+    'SELECT email FROM "user" WHERE email <> '"''"' ORDER BY created_at LIMIT 1' 2>/dev/null \
+    | tr -d '[:space:]' || true)"
+fi
+
+printf '  %-16s %s\n' "email:" "${email:-<not set yet -- complete the setup screen first>}"
 printf '  %-16s %s\n' "password:" "${pw:-${AIRBYTE_ADMIN_PASSWORD:-<unavailable>}}"
 
 cid="$(get_key instance-admin-client-id)"

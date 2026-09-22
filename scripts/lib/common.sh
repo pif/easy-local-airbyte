@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared configuration and helpers for all sp-airbyte scripts.
+# Shared configuration and helpers for all easy-local-airbyte scripts.
 # Sourced, not executed.
 
 set -euo pipefail
@@ -17,7 +17,7 @@ if [[ -f "${REPO_ROOT}/.env" ]]; then
   set +a
 fi
 
-: "${CLUSTER_NAME:=sp-airbyte}"
+: "${CLUSTER_NAME:=easy-local-airbyte}"
 : "${KUBE_CONTEXT:=kind-${CLUSTER_NAME}}"
 : "${NAMESPACE:=airbyte}"
 : "${RELEASE:=airbyte}"
@@ -195,10 +195,82 @@ pg_pod_name() {
   printf '%s' "${found#pod/}"
 }
 
+sha256() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256
+  else sha256sum
+  fi
+}
+
+# Fingerprint the runtime config that pods consume by reference.
+#
+# Most Airbyte settings reach the pods via configMapKeyRef/secretKeyRef against
+# <release>-airbyte-env and <release>-airbyte-secrets. Kubernetes resolves those
+# into the container environment ONCE, at pod start, and the chart puts no
+# checksum annotation on its pod templates. So a values change that only alters
+# the ConfigMap -- telemetry flags, most low-resource settings -- leaves the
+# Deployment spec byte-identical, Helm reports "deployed" with nothing to roll,
+# and the running pods keep serving the OLD configuration indefinitely.
+#
+# Comparing this fingerprint across a helm upgrade tells us whether a restart is
+# actually required, so we neither miss a change nor restart for nothing.
+config_fingerprint() {
+  {
+    kcn get configmap "${RELEASE}-airbyte-env" -o jsonpath='{.data}' 2>/dev/null || true
+    kcn get configmap "${RELEASE}-airbyte-telemetry-env" -o jsonpath='{.data}' 2>/dev/null || true
+    kcn get secret "${RELEASE}-airbyte-secrets" -o jsonpath='{.data}' 2>/dev/null || true
+  } | sha256 | awk '{print $1}'
+}
+
+CONFIG_FP_ANNOTATION="easy-local-airbyte/config-fingerprint"
+
+# Stamp the current config fingerprint onto every Airbyte pod template.
+#
+# This is the checksum-annotation pattern the chart is missing, implemented
+# script-side. Patching a pod template with a *changed* fingerprint makes
+# Kubernetes roll that deployment; patching it with the same fingerprint leaves
+# the object byte-identical, so nothing restarts.
+#
+# Crucially this compares desired config against what the pods were actually
+# stamped with -- not against the previous ConfigMap. That makes it converge
+# from any starting state, including an upgrade that updated the ConfigMap but
+# died before restarting anything.
+#
+# Returns 0 always; prints what it rolled. Sets CONFIG_ROLLED to the count.
+sync_config_to_workloads() {
+  local fp deps d cur gen_before gen_after
+  CONFIG_ROLLED=0
+  fp="$(config_fingerprint)"
+  deps="$(kcn get deployments -o name 2>/dev/null || true)"
+  [[ -n "$deps" ]] || return 0
+
+  for d in $deps; do
+    cur="$(kcn get "$d" -o jsonpath="{.spec.template.metadata.annotations['${CONFIG_FP_ANNOTATION}']}" 2>/dev/null || true)"
+    [[ "$cur" == "$fp" ]] && continue
+
+    gen_before="$(kcn get "$d" -o jsonpath='{.metadata.generation}' 2>/dev/null || echo 0)"
+    kcn patch "$d" --type=merge \
+      -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"${CONFIG_FP_ANNOTATION}\":\"${fp}\"}}}}}" \
+      >/dev/null
+    gen_after="$(kcn get "$d" -o jsonpath='{.metadata.generation}' 2>/dev/null || echo 0)"
+
+    if [[ "$gen_before" != "$gen_after" ]]; then
+      CONFIG_ROLLED=$(( CONFIG_ROLLED + 1 ))
+      dim "  rolling ${d#deployment.apps/}"
+    fi
+  done
+
+  (( CONFIG_ROLLED > 0 )) || return 0
+
+  for d in $deps; do
+    kcn rollout status "$d" --timeout=300s >/dev/null 2>&1 \
+      || warn "  ${d#deployment.apps/} did not become ready within 5m"
+  done
+}
+
 # Resolve a component's Deployment name by label rather than by guessing it.
 # Necessary because the chart's fullname helper collapses the release prefix
 # when the release is called "airbyte" (giving "airbyte-server"), but not
-# otherwise (giving e.g. "sp-airbyte-server") -- so no single string pattern
+# otherwise (giving e.g. "easy-local-airbyte-server") -- so no single string pattern
 # works for every RELEASE value.
 # Usage: deploy_name server   ->  prints the Deployment name, or nothing.
 deploy_name() {

@@ -40,6 +40,53 @@ global:
         cpu: "3"
         memory: 4Gi
 
+    errors:
+      # Report connector job errors to the local log instead of Sentry.
+      # This is already the chart default; pinned so an upstream change to that
+      # default cannot start shipping stack traces off the machine.
+      reportingStrategy: logging
+
+  # ---------------------------------------------------------------------------
+  # Telemetry: fully disabled
+  # ---------------------------------------------------------------------------
+  # Out of the box this chart DOES phone home. It ships a hardcoded Airbyte
+  # Segment write key as the default for tracking.segment.writeKeySecretKey and
+  # defaults tracking.enabled to true with strategy "segment", so a stock
+  # install posts usage events to Airbyte's Segment project.
+  #
+  # Note that the "Anonymize usage data collection" checkbox on the signup
+  # screen does NOT turn this off. That checkbox writes
+  # workspace.anonymous_data_collection, which only controls whether events are
+  # tagged with your workspace ID or a random UUID -- the events are still sent.
+  # `strategy: logging` is the actual off switch: events are written to the pod
+  # log instead of being transmitted anywhere.
+  tracking:
+    enabled: false
+    strategy: logging   # one of: logging, segment
+    segment:
+      # Replaces the chart's built-in Airbyte write key. Cannot be set to ""
+      # here -- the template resolves it with sprig's `default`, which treats an
+      # empty string as unset and would restore the real key. A dummy value
+      # means that even if tracking were somehow re-enabled, there is no valid
+      # destination to post to.
+      writeKeySecretKey: "disabled"
+
+  # APM. Already off by default; pinned so it stays off.
+  datadog:
+    enabled: false
+    debug: false
+
+  # Metrics egress. All exporters off and endpoints empty, so nothing leaves the
+  # cluster. `publish` is undocumented in the chart's values.yaml but defaults
+  # to true, so it is set explicitly here.
+  metrics:
+    enabled: false
+    publish: false
+    otlp:
+      enabled: false
+    statsd:
+      enabled: false
+
 # Bundled Postgres. Chart default PVC is 500Mi, which fills up quickly once
 # job history accumulates.
 postgresql:
@@ -49,6 +96,12 @@ postgresql:
 
 minio:
   enabled: true
+  # The chart pins minio/minio on Docker Hub, but MinIO removed its old tags
+  # there (pulls fail with "pull access denied"). The same tag still exists
+  # on quay.io.
+  image:
+    repository: quay.io/minio/minio
+    tag: RELEASE.2023-11-20T22-40-07Z
   storage:
     volumeClaimValue: 10Gi
 

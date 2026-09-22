@@ -86,6 +86,20 @@ dim "  First run pulls several GB of images and typically takes 10-20 minutes."
 helm_ "${args[@]}"
 
 ok "Helm release applied"
+
+# Most Airbyte settings reach pods via configMapKeyRef, which Kubernetes resolves
+# once at pod start, and the chart stamps no checksum on its pod templates. So a
+# values change that only alters the ConfigMap (telemetry flags, most
+# low-resource settings) leaves the Deployment spec identical: Helm reports
+# "deployed" while the running pods keep serving the OLD config. This closes that
+# gap, and is a no-op when nothing changed.
+log "Reconciling runtime config with running pods"
+sync_config_to_workloads
+if (( ${CONFIG_ROLLED:-0} > 0 )); then
+  ok "Rolled ${CONFIG_ROLLED} deployment(s) to pick up changed configuration"
+else
+  dim "  Pods already running the current configuration."
+fi
 "${REPO_ROOT}/scripts/status.sh" || true
 
 printf '\n'
